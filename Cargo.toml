@@ -7,6 +7,7 @@ edition = "2018"
 
 [dependencies]
 url = "^2.2.2"
+structopt = "^0.3.25"
 
 [[bin]]
 name = "client"
