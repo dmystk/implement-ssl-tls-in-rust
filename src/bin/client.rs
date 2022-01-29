@@ -1,5 +1,5 @@
-
-use std::io::{Write, Read};  // need to use stream.read() and stream.write()
+// Read and Write need to use stream.read() and stream.write()
+use std::io::{Write, Read, Result, Error, ErrorKind};
 use std::net::TcpStream;
 use url::Url;
 use structopt::StructOpt;
@@ -64,7 +64,7 @@ macro_rules! unwrap_or_return_err {
 
 // Request HTTP GET and process response stream with the callback function.
 // The callback is called chunk by chunk.
-fn request_http_get(url: &Url, callback: fn(&[u8])) -> std::io::Result<()> {
+fn request_http_get(url: &Url, callback: fn(&[u8])) -> Result<()> {
     // connect to host
     let host = url.host_str().unwrap();
     let port = url.port_or_known_default().unwrap();
@@ -93,7 +93,7 @@ fn request_http_get_with_proxy(
     url: &Url,
     proxy_url: &Url,
     callback: fn(&[u8])
-) -> std::io::Result<()> {
+) -> Result<()> {
     // connect to proxy
     let proxy_host = proxy_url.host_str().unwrap();
     let proxy_port = proxy_url.port_or_known_default().unwrap();
@@ -103,12 +103,16 @@ fn request_http_get_with_proxy(
 
     // send HTTP GET request
     let host = url.host_str().unwrap();
-    let path = url.as_str();  // need to use the full URL as path when using proxy
+    let path = url.as_str();  // need to use the full URL when using proxy
+    let auth = unwrap_or_return_err!(get_proxy_auth(&proxy_url))
+        .map(|auth| { auth.as_tag() })
+        .unwrap_or(String::new());
     let request = format!(concat!(
         "GET {} HTTP/1.1\r\n",
         "Host: {}\r\n",
+        "{}",
         "Connection: close\r\n\r\n",
-    ), path, host);
+    ), path, host, auth);
     unwrap_or_return_err!(
         send_request(&stream, &request)
     );
@@ -118,23 +122,23 @@ fn request_http_get_with_proxy(
 }
 
 // Connect to host server.
-fn connect(host: &str, port: u16) -> std::io::Result<TcpStream> {
+fn connect(host: &str, port: u16) -> Result<TcpStream> {
     TcpStream::connect((host, port)).map_err(|e| {
-        std::io::Error::new(e.kind(), format!("Failed to connect host: {}", e))
+        Error::new(e.kind(), format!("Failed to connect host: {}", e))
     })
 }
 
 /// Send a request string to socket.
-fn send_request(mut stream: &TcpStream, request: &str) -> std::io::Result<usize> {
+fn send_request(mut stream: &TcpStream, request: &str) -> Result<usize> {
     stream.write(request.as_bytes()).map_err(|e| {
-        std::io::Error::new(e.kind(), format!("Failed to send request: {}", e))
+        Error::new(e.kind(), format!("Failed to send request: {}", e))
     })
 }
 
 /// Recieve response chunk by chunk.
-fn recieve_response(stream: &TcpStream, callback: fn(&[u8])) -> std::io::Result<()> {
+fn recieve_response(stream: &TcpStream, callback: fn(&[u8])) -> Result<()> {
     read_chunks(stream, callback).map_err(|e| {
-        std::io::Error::new(e.kind(), format!("Failed to recieve response: {}", e))
+        Error::new(e.kind(), format!("Failed to recieve response: {}", e))
     })
 }
 
@@ -142,7 +146,7 @@ fn recieve_response(stream: &TcpStream, callback: fn(&[u8])) -> std::io::Result<
 const MAX_CHUNK_SIZE: usize = 1024;
 
 /// Read bytes from a stream chunk by chunk and process it.
-fn read_chunks(mut stream: &TcpStream, f: fn(&[u8])) -> std::io::Result<()> {
+fn read_chunks(mut stream: &TcpStream, f: fn(&[u8])) -> Result<()> {
     let mut buf: [u8; MAX_CHUNK_SIZE] = [0; MAX_CHUNK_SIZE];
     loop {
         let read_size = unwrap_or_return_err!(stream.read(&mut buf));
@@ -152,4 +156,48 @@ fn read_chunks(mut stream: &TcpStream, f: fn(&[u8])) -> std::io::Result<()> {
             f(&buf[0..read_size]);
         }
     }
+}
+
+/// Struct for proxy authorization.
+struct ProxyAuth {
+    method: &'static str,
+    credentials: String,
+}
+impl ProxyAuth {
+    /// Create BASIC authorization.
+    pub fn basic(username: &str, password: &str) -> ProxyAuth {
+        let credentials = impl_ssl_tls::base64::encode(
+            format!("{}:{}", username, password)
+        );
+        ProxyAuth { method: "BASIC", credentials }
+    }
+
+    /// Get as HTTP tag.
+    pub fn as_tag(&self) -> String {
+        format!("Proxy-Authorization: {} {}\r\n", self.method, self.credentials)
+    }
+}
+
+/// Get Proxy-Authorization tag.
+/// This function supports only BASIC authorization, and fails if username
+/// without password is specified in argument URL.
+fn get_proxy_auth(proxy: &Url) -> Result<Option<ProxyAuth>> {
+    let user = proxy.username();
+    let pass = proxy.password();
+
+    // only supplying both username and password or not both is allowed
+    if !user.is_empty() && pass.is_none() {
+        // return something error
+        return Err(Error::new(ErrorKind::Other,
+            format!("Invalid proxy credentials: Expected password in {}", proxy)
+        ));
+    }
+
+    // just return empty (no tag) if username is not specified
+    if user.is_empty() {
+        return Ok(None);
+    }
+
+    // support only BASIC authorization here
+    Ok(Some(ProxyAuth::basic(user, pass.unwrap())))
 }
