@@ -13,3 +13,8 @@ structopt = "^0.3.25"
 name = "client"
 test = false
 bench = false
+
+[[bin]]
+name = "server"
+test = false
+bench = false
